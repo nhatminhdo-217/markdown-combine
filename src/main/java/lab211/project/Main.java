@@ -10,16 +10,33 @@ import com.vladsch.flexmark.parser.Parser;
 import com.vladsch.flexmark.util.ast.Node;
 import com.vladsch.flexmark.util.data.MutableDataSet;
 
-import java.io.*;
-import java.nio.file.*;
-import java.util.*;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
+/**
+ * The main class for the Markdown merging utility.
+ * <p>
+ * This utility scans a directory for Markdown files, parses them to extract tables
+ * and content separated by horizontal rules, and merges them into a single output file.
+ * It specifically handles merging tables with identical structures and appending
+ * non-table content sequentially.
+ * </p>
+ */
 public class Main {
 
+    /**
+     * The Markdown parser instance configured with the Tables extension.
+     * This static instance is reused for parsing all files to improve performance.
+     */
     private static final Parser parser;
 
     static {
@@ -28,6 +45,12 @@ public class Main {
         parser = Parser.builder(options).build();
     }
 
+    /**
+     * The entry point of the application.
+     *
+     * @param args Command line arguments. The first argument is optional and specifies
+     * the output filename (defaults to "output.md" if not provided).
+     */
     public static void main(String[] args) {
         String outputFileName = "output.md";
 
@@ -51,9 +74,11 @@ public class Main {
     /**
      * Finds all Markdown files in the current directory, parses them, merges their tables and content,
      * and writes the result to an output file.
+     * <p>
      * This method orchestrates the entire merging process. It iterates through all found markdown files,
      * splits their content by a horizontal rule, and processes the table and non-table sections separately.
      * It ensures that all merged tables share the same structure (headers).
+     * </p>
      *
      * @param outputFileName The name of the file to write the merged content to.
      * @throws IOException if an I/O error occurs when reading files or writing the output file.
@@ -124,7 +149,7 @@ public class Main {
 
         // Add content after --- from all files
         for (FileContent content : allContent) {
-            mergedContent.append("<!-- Content from: ").append(content.fileName()).append(" -->\n");
+            mergedContent.append("\n");
             mergedContent.append(content.content()).append("\n\n");
         }
 
@@ -139,6 +164,10 @@ public class Main {
     /**
      * Scans a given directory for Markdown files (`.md`), excluding the specified output file.
      * The search is limited to the top level of the given directory.
+     * <p>
+     * Files are sorted based on a numeric sequence extracted from their filenames
+     * using {@link #extractStartNumber(String)}.
+     * </p>
      *
      * @param directory      The directory to search in.
      * @param outputFileName The name of the output file to exclude from the search results.
@@ -171,9 +200,19 @@ public class Main {
                 .collect(Collectors.toList());
     }
 
+    /**
+     * Extracts a specific numeric identifier from a filename based on a regex pattern.
+     * <p>
+     * The method expects the filename to end with a pattern like {@code _num1_num2.md}
+     * (e.g., {@code file_10_01.md}). It extracts and returns the first number group (num1).
+     * </p>
+     *
+     * @param fileName The name of the file to parse.
+     * @return The integer value of the extracted number, or {@code null} if the pattern does not match.
+     */
     private static Integer extractStartNumber(String fileName) {
         try {
-            //Find the final two digit of String
+            // Pattern matches files ending in: _(digits)_(digits).md
             Pattern pattern = java.util.regex.Pattern.compile(".*_(\\d+)_(\\d+)\\.md$");
             Matcher matcher = pattern.matcher(fileName);
 
@@ -182,7 +221,7 @@ public class Main {
                 return Integer.parseInt(matcher.group(1));
             }
 
-            System.err.println(fileName + " doesn't match any start number");
+            System.err.println("Invalid format file name: " + fileName);
             return null;
         } catch (Exception e) {
             System.err.println("Error extracting number from file: " + fileName + " - " + e.getMessage());
@@ -192,12 +231,11 @@ public class Main {
 
     /**
      * Splits the content of a Markdown file into two sections based on the first horizontal rule (`---`).
-     * If no horizontal rule is found, all content is considered to be in the "before" section.
      *
      * @param markdown The full string content of the Markdown file.
      * @param fileName The name of the file, used for context in the returned record.
      * @return A {@code FileSections} record containing the content before and after the horizontal rule.
-     *         If no rule is found, the {@code afterHorizontalRule} part will be {@code null}.
+     * If no rule is found, the {@code afterHorizontalRule} component will be {@code null}.
      */
     private static FileSections splitFileContent(String markdown, String fileName) {
         // Split content by the first horizontal rule (---)
@@ -263,7 +301,7 @@ public class Main {
      * @param tableBlock The {@code TableBlock} node from the AST.
      * @param fileName   The name of the source file for context.
      * @return A {@code TableData} record containing the table's structure and rows.
-     *         Returns {@code null} if no headers are found in the table.
+     * Returns {@code null} if no headers are found in the table.
      */
     private static TableData extractTableData(TableBlock tableBlock, String fileName) {
         List<String> headers = new ArrayList<>();
@@ -400,18 +438,28 @@ public class Main {
      * @param headers A list of strings representing the column headers.
      */
     private record TableStructure(List<String> headers) {
-            private TableStructure(List<String> headers) {
-                this.headers = new ArrayList<>(headers);
-            }
+        /**
+         * Constructor creates a defensive copy of the headers list to ensure immutability.
+         * @param headers The list of header strings.
+         */
+        private TableStructure(List<String> headers) {
+            this.headers = new ArrayList<>(headers);
+        }
 
-            @Override
-            public boolean equals(Object obj) {
-                if (this == obj) return true;
-                if (obj == null || getClass() != obj.getClass()) return false;
-                TableStructure that = (TableStructure) obj;
-                return Objects.equals(headers, that.headers);
-            }
-
+        /**
+         * Compares this table structure to another object.
+         * Equality is defined based on the content and order of the headers.
+         *
+         * @param obj The object to compare with.
+         * @return {@code true} if the headers are identical, {@code false} otherwise.
+         */
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) return true;
+            if (obj == null || getClass() != obj.getClass()) return false;
+            TableStructure that = (TableStructure) obj;
+            return Objects.equals(headers, that.headers);
+        }
     }
 
     /**
@@ -423,6 +471,12 @@ public class Main {
     private record FileContent(String fileName, String content) {
     }
 
+    /**
+     * A helper record used for sorting file paths based on an extracted number.
+     *
+     * @param path   The file path.
+     * @param number The number extracted from the filename for sorting purposes.
+     */
     private record PathWithNumber(Path path, int number) {
     }
 }
