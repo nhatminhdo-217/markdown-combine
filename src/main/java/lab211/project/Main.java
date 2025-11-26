@@ -16,16 +16,32 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 
+/**
+ * A utility class to merge Markdown tables from multiple files.
+ * <p>
+ * This application takes a primary input Markdown file containing a table, finds related
+ * "test_result" Markdown files in the same directory, extracts their tables, and merges
+ * them into a single output file based on the first column (ID) of the tables.
+ * </p>
+ */
 public class Main {
 
     private static final Parser parser;
 
     static {
+        // Initialize the Flexmark parser with the Tables extension
         MutableDataSet options = new MutableDataSet();
         options.set(Parser.EXTENSIONS, List.of(TablesExtension.create()));
         parser = Parser.builder(options).build();
     }
 
+    /**
+     * The main entry point of the application.
+     *
+     * @param args Command line arguments.
+     * args[0]: Input markdown file path (required).
+     * args[1]: Output markdown file path (optional, default: output.md).
+     */
     public static void main(String[] args) {
         String inputFileName = null;
         String outputFileName = "output.md";
@@ -54,6 +70,13 @@ public class Main {
         }
     }
 
+    /**
+     * Orchestrates the process of reading, parsing, merging, and writing the markdown files.
+     *
+     * @param inputFileName  The name of the primary input file.
+     * @param outputFileName The name of the file to write the results to.
+     * @throws IOException If an I/O error occurs during file reading or writing.
+     */
     private static void mergeMarkdownTables(String inputFileName, String outputFileName) throws IOException {
         Path currentDir = Paths.get("");
         Path inputFile = currentDir.resolve(inputFileName);
@@ -62,18 +85,18 @@ public class Main {
             throw new IOException("Input file not found: " + inputFileName);
         }
 
-        // Đọc file input và tách nội dung
+        // Read input file and split content
         String inputContent = Files.readString(inputFile);
         FileContent inputFileContent = splitFileContent(inputContent);
 
-        // Parse bảng từ input
+        // Parse table from input
         Table inputTable = parseFirstTable(inputFileContent.beforeHorizontalRule());
 
         if (inputTable == null) {
             throw new IOException("No table found in input file.");
         }
 
-        // Tìm các file test_result để merge
+        // Find test_result files to merge
         List<Path> testResultFiles = findTestResultFiles(currentDir, inputFileName, outputFileName);
 
         if (testResultFiles.isEmpty()) {
@@ -81,7 +104,7 @@ public class Main {
             return;
         }
 
-        // Parse tất cả các file test_result
+        // Parse all test_result files
         List<Table> testResultTables = new ArrayList<>();
         List<FileContent> testResultContents = new ArrayList<>();
 
@@ -90,14 +113,14 @@ public class Main {
                 String content = Files.readString(file);
                 FileContent fileContent = splitFileContent(content);
 
-                // Parse bảng
+                // Parse table
                 Table table = parseFirstTable(fileContent.beforeHorizontalRule());
                 if (table != null) {
                     testResultTables.add(table);
                     System.out.println("Loaded table from: " + file.getFileName());
                 }
 
-                // Lưu nội dung dưới ---
+                // Save content below ---
                 if (fileContent.afterHorizontalRule() != null &&
                         !fileContent.afterHorizontalRule().trim().isEmpty()) {
                     testResultContents.add(new FileContent(
@@ -112,35 +135,41 @@ public class Main {
             }
         }
 
-        // Merge dữ liệu từ test_result vào input table dựa trên ID
+        // Merge data from test_result into input table based on ID
         Table mergedTable = mergeTablesById(inputTable, testResultTables);
 
-        // Tạo nội dung markdown mới
+        // Create new markdown content
         StringBuilder newContent = new StringBuilder();
 
-        // Thêm bảng đã merge
+        // Add merged table
         newContent.append(createMarkdownTable(mergedTable)).append("\n\n");
 
-        // Thêm dấu --- để phân cách
+        // Add separator ---
         newContent.append("---\n\n");
 
-        // Thêm nội dung từ input (phần dưới ---)
+        // Add content from input file (part below ---)
         if (inputFileContent.afterHorizontalRule() != null &&
                 !inputFileContent.afterHorizontalRule().trim().isEmpty()) {
-            newContent.append("<!-- Content from input file -->\n");
+            newContent.append("\n");
             newContent.append(inputFileContent.afterHorizontalRule()).append("\n\n");
         }
 
-        // Thêm nội dung từ các file test_result (phần dưới ---)
+        // Add content from test_result files (part below ---)
         for (FileContent content : testResultContents) {
-            newContent.append("<!-- Content from: ").append(content.fileName()).append(" -->\n");
+            newContent.append("\n");
             newContent.append(content.afterHorizontalRule()).append("\n\n");
         }
 
-        // Ghi file output
+        // Write output file
         Files.write(Paths.get(outputFileName), newContent.toString().getBytes());
     }
 
+    /**
+     * Splits the content of a markdown file into two parts based on the first horizontal rule (---).
+     *
+     * @param markdown The raw string content of the markdown file.
+     * @return A {@link FileContent} object containing the parts before and after the rule.
+     */
     private static FileContent splitFileContent(String markdown) {
         // Split content by the first horizontal rule (---)
         String[] sections = markdown.split("\\n\\s*---\\s*\\n", 2);
@@ -154,6 +183,15 @@ public class Main {
         }
     }
 
+    /**
+     * Scans the directory for valid test result markdown files.
+     *
+     * @param directory      The directory to search in.
+     * @param inputFileName  The input file name to exclude.
+     * @param outputFileName The output file name to exclude.
+     * @return A list of paths to valid test result files, sorted by their sequence number.
+     * @throws IOException If an I/O error occurs during directory walking.
+     */
     private static List<Path> findTestResultFiles(Path directory, String inputFileName, String outputFileName) throws IOException {
         List<Path> allFiles = Files.walk(directory, 1)
                 .filter(Files::isRegularFile)
@@ -162,7 +200,7 @@ public class Main {
                 .filter(path -> !path.getFileName().toString().equals(outputFileName))
                 .toList();
 
-        // Lọc các file có pattern test_result
+        // Filter files matching the test_result pattern
         List<Path> testResultFiles = new ArrayList<>();
         List<Path> skippedFiles = new ArrayList<>();
 
@@ -182,7 +220,7 @@ public class Main {
             }
         }
 
-        // Sắp xếp theo số bắt đầu
+        // Sort by starting number
         testResultFiles.sort((p1, p2) -> {
             int num1 = extractStartNumber(p1.getFileName().toString());
             int num2 = extractStartNumber(p2.getFileName().toString());
@@ -192,10 +230,22 @@ public class Main {
         return testResultFiles;
     }
 
+    /**
+     * Checks if the filename matches a specific numeric pattern (e.g., ending in _1_2.md).
+     *
+     * @param fileName The name of the file.
+     * @return true if it matches the pattern, false otherwise.
+     */
     private static boolean hasNumberPattern(String fileName) {
         return fileName.matches(".*_\\d+_\\d+\\.md$");
     }
 
+    /**
+     * Extracts the first number sequence from a filename matching the pattern.
+     *
+     * @param fileName The filename to parse.
+     * @return The extracted number, or 0 if extraction fails.
+     */
     private static int extractStartNumber(String fileName) {
         try {
             java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(".*_(\\d+)_(\\d+)\\.md$");
@@ -209,6 +259,12 @@ public class Main {
         return 0;
     }
 
+    /**
+     * Parses the markdown content and extracts the first table found.
+     *
+     * @param markdown The markdown string.
+     * @return A {@link Table} object, or null if no table is found.
+     */
     private static Table parseFirstTable(String markdown) {
         if (markdown == null || markdown.trim().isEmpty()) {
             return null;
@@ -226,6 +282,12 @@ public class Main {
         return extractTable(firstTable);
     }
 
+    /**
+     * Recursively traverses the AST to find all TableBlock nodes.
+     *
+     * @param node        The current node being visited.
+     * @param tableBlocks The list to accumulate found TableBlocks.
+     */
     private static void collectTableBlocks(Node node, List<TableBlock> tableBlocks) {
         if (node instanceof TableBlock) {
             tableBlocks.add((TableBlock) node);
@@ -238,6 +300,12 @@ public class Main {
         }
     }
 
+    /**
+     * Converts a Flexmark TableBlock node into a simplified Table record.
+     *
+     * @param tableBlock The Flexmark AST node representing the table.
+     * @return A populated {@link Table} object.
+     */
     private static Table extractTable(TableBlock tableBlock) {
         List<String> headers = new ArrayList<>();
         List<List<String>> rows = new ArrayList<>();
@@ -276,6 +344,12 @@ public class Main {
         return new Table(headers, rows);
     }
 
+    /**
+     * Extracts text content from all cells in a table row.
+     *
+     * @param row The TableRow node.
+     * @return A list of string contents for each cell.
+     */
     private static List<String> extractRowCells(TableRow row) {
         List<String> cells = new ArrayList<>();
         TableCell cell = (TableCell) row.getFirstChild();
@@ -289,6 +363,12 @@ public class Main {
         return cells;
     }
 
+    /**
+     * Extracts text content from a table cell node.
+     *
+     * @param cell The TableCell node.
+     * @return The string content of the cell.
+     */
     private static String extractCellContent(Node cell) {
         StringBuilder content = new StringBuilder();
         Node child = cell.getFirstChild();
@@ -301,12 +381,23 @@ public class Main {
         return content.toString().trim();
     }
 
+    /**
+     * Merges the input table with multiple test result tables.
+     * <p>
+     * It uses the first column (assumed to be ID) as the key to join rows.
+     * Columns from test result tables are appended to the input table rows.
+     * </p>
+     *
+     * @param inputTable       The base table.
+     * @param testResultTables The list of tables to merge into the base table.
+     * @return A new merged {@link Table}.
+     */
     private static Table mergeTablesById(Table inputTable, List<Table> testResultTables) {
-        // Tạo map để truy cập nhanh các row theo id từ test_result tables
+        // Create a map for quick access to rows by ID from test_result tables
         Map<String, List<String>> idToTestResultRowMap = new HashMap<>();
         List<String> testResultHeaders = new ArrayList<>();
 
-        // Lấy headers từ test_result tables (giả sử tất cả đều có cùng headers)
+        // Get headers from test_result tables (assuming all have the same headers)
         if (!testResultTables.isEmpty()) {
             testResultHeaders = testResultTables.getFirst().headers();
         }
@@ -320,13 +411,13 @@ public class Main {
             }
         }
 
-        // Tạo headers mới: headers từ input + headers từ test_result (bỏ cột id)
+        // Create new headers: input headers + test_result headers (excluding ID column)
         List<String> newHeaders = new ArrayList<>(inputTable.headers());
         if (!testResultHeaders.isEmpty()) {
             newHeaders.addAll(testResultHeaders.subList(1, testResultHeaders.size()));
         }
 
-        // Tạo rows mới
+        // Create new rows
         List<List<String>> mergedRows = new ArrayList<>();
 
         for (List<String> inputRow : inputTable.rows()) {
@@ -335,13 +426,13 @@ public class Main {
             String id = inputRow.getFirst();
             List<String> newRow = new ArrayList<>(inputRow);
 
-            // Thêm dữ liệu từ test_result nếu có
+            // Add data from test_result if available
             List<String> testResultRow = idToTestResultRowMap.get(id);
             if (testResultRow != null) {
-                // Thêm tất cả các cột từ test_result trừ cột id đầu tiên
+                // Add all columns from test_result except the first ID column
                 newRow.addAll(testResultRow.subList(1, testResultRow.size()));
             } else {
-                // Thêm giá trị rỗng cho các cột test_result nếu không tìm thấy
+                // Add empty values for test_result columns if not found
                 for (int i = 1; i < testResultHeaders.size(); i++) {
                     newRow.add("");
                 }
@@ -353,6 +444,12 @@ public class Main {
         return new Table(newHeaders, mergedRows);
     }
 
+    /**
+     * formatting it as a Markdown string.
+     *
+     * @param table The table data to format.
+     * @return A string representation of the table in Markdown format.
+     */
     private static String createMarkdownTable(Table table) {
         StringBuilder markdown = new StringBuilder();
 
@@ -375,9 +472,22 @@ public class Main {
         return markdown.toString();
     }
 
+    /**
+     * A record representing a parsed table structure.
+     *
+     * @param headers List of header strings.
+     * @param rows    List of rows, where each row is a list of strings.
+     */
     private record Table(List<String> headers, List<List<String>> rows) {
     }
 
+    /**
+     * A record representing the split content of a markdown file.
+     *
+     * @param fileName             The name of the file.
+     * @param beforeHorizontalRule Content before the first '---'.
+     * @param afterHorizontalRule  Content after the first '---'.
+     */
     private record FileContent(String fileName, String beforeHorizontalRule, String afterHorizontalRule) {
     }
 }
