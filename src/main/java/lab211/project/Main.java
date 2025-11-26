@@ -9,34 +9,23 @@ import com.vladsch.flexmark.ext.tables.TablesExtension;
 import com.vladsch.flexmark.parser.Parser;
 import com.vladsch.flexmark.util.ast.Node;
 import com.vladsch.flexmark.util.data.MutableDataSet;
+import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Objects;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
+import java.util.*;
 
 /**
- * The main class for the Markdown merging utility.
+ * A utility class to merge Markdown tables from multiple files.
  * <p>
- * This utility scans a directory for Markdown files, parses them to extract tables
- * and content separated by horizontal rules, and merges them into a single output file.
- * It specifically handles merging tables with identical structures and appending
- * non-table content sequentially.
- * </p>
+ * It takes a main input Markdown file containing a table, finds related "test_result"
+ * markdown files in the same directory, and merges their columns into the main table
+ * based on the matching ID (assumed to be the first column).
  */
 public class Main {
 
-    /**
-     * The Markdown parser instance configured with the Tables extension.
-     * This static instance is reused for parsing all files to improve performance.
-     */
     private static final Parser parser;
 
     static {
@@ -48,240 +37,198 @@ public class Main {
     /**
      * The entry point of the application.
      *
-     * @param args Command line arguments. The first argument is optional and specifies
-     *             the output filename (defaults to "output.md" if not provided).
+     * @param args Command line arguments:
+     * args[0]: Input markdown file path (required).
+     * args[1]: Output markdown file path (optional, default: output.md).
      */
     public static void main(String[] args) {
-        String outputFileName = "output.md";
+        String inputFileName = null;
+        String outputFileName = "output.md"; // Default is output.md
 
-        if (args.length > 0) {
-            outputFileName = args[0];
-            if (!outputFileName.endsWith(".md")) {
-                outputFileName += ".md";
-            }
+        //Handle command line args
+        if (args.length >= 1) {
+            inputFileName = args[0];
+        }
+
+        if (args.length >= 2) {
+            outputFileName = args[1];
+        }
+
+        if (inputFileName == null) {
+            System.err.println("Usage: java -jar app.jar <input-file.md> [output-file.md]");
+            System.err.println("If output-file.md is not specified, default is output.md");
+            System.exit(1);
         }
 
         try {
-            mergeMarkdownContent(outputFileName);
-            System.out.println("Successfully merged markdown content into " + outputFileName);
+            mergeMarkdownTables(inputFileName, outputFileName);
+            System.out.println("Successfully merged markdown tables into " + outputFileName);
         } catch (Exception e) {
-            System.err.println("Error merging markdown content: " + e.getMessage());
+            System.err.println("Error merging markdown tables: " + e.getMessage());
             e.printStackTrace();
             System.exit(1);
         }
     }
 
     /**
-     * Finds all Markdown files in the current directory, parses them, merges their tables and content,
-     * and writes the result to an output file.
-     * <p>
-     * This method orchestrates the entire merging process. It iterates through all found markdown files,
-     * splits their content by a horizontal rule, and processes the table and non-table sections separately.
-     * It ensures that all merged tables share the same structure (headers).
-     * </p>
+     * Orchestrates the process of reading the input file, discovering test result files,
+     * merging the table data, and writing the result to the output file.
      *
-     * @param outputFileName The name of the file to write the merged content to.
-     * @throws IOException if an I/O error occurs when reading files or writing the output file.
+     * @param inputFileName  The name of the main input file.
+     * @param outputFileName The name of the file to write the merged result to.
+     * @throws IOException If an I/O error occurs during file reading or writing.
      */
-    private static void mergeMarkdownContent(String outputFileName) throws IOException {
+    private static void mergeMarkdownTables(String inputFileName, String outputFileName) throws IOException {
         Path currentDir = Paths.get("");
-        List<Path> markdownFiles = findMarkdownFiles(currentDir, outputFileName);
+        Path inputFile = currentDir.resolve(inputFileName);
 
-        if (markdownFiles.isEmpty()) {
-            System.out.println("No markdown files found in current directory.");
+        if (!Files.exists(inputFile)) {
+            throw new IOException("Input file not found: " + inputFileName);
+        }
+
+        //Read input file
+        String inputContent = Files.readString(inputFile);
+        Table inputTable = parseFirstTable(inputContent);
+
+        if (inputTable == null) {
+            throw new IOException("No table found in input file.");
+        }
+
+        //Find all test result file to merge
+        List<Path> testResultFiles = findTestResultFiles(currentDir, inputFileName, outputFileName);
+
+        if (testResultFiles.isEmpty()) {
+            System.out.println("No test result files found to merge.");
             return;
         }
 
-        List<TableData> allTableData = new ArrayList<>();
-        List<FileContent> allContent = new ArrayList<>();
-        TableStructure tableStructure = null;
-
-        // Process all files
-        for (Path file : markdownFiles) {
+        //Parse all test_result file
+        List<Table> testResultTables = new ArrayList<>();
+        for (Path file : testResultFiles) {
             try {
                 String content = Files.readString(file);
-                FileSections sections = splitFileContent(content, file.getFileName().toString());
-
-                // Process tables (before ---)
-                if (sections.beforeHorizontalRule() != null && !sections.beforeHorizontalRule().trim().isEmpty()) {
-                    List<TableData> tables = parseTablesFromMarkdown(sections.beforeHorizontalRule(), file.getFileName().toString());
-
-                    if (!tables.isEmpty()) {
-                        TableData firstTable = tables.getFirst();
-
-                        // Set table structure from first file
-                        if (tableStructure == null) {
-                            tableStructure = firstTable.structure();
-                        }
-
-                        // Verify structure matches
-                        if (firstTable.structure().equals(tableStructure)) {
-                            allTableData.addAll(tables);
-                        } else {
-                            System.err.println("Warning: Table structure in " + file.getFileName() +
-                                    " doesn't match. Skipping tables from this file.");
-                        }
-                    }
+                Table table = parseFirstTable(content);
+                if (table != null) {
+                    testResultTables.add(table);
+                    System.out.println("Loaded table from: " + file.getFileName());
                 }
-
-                // Process content after ---
-                if (sections.afterHorizontalRule() != null && !sections.afterHorizontalRule().trim().isEmpty()) {
-                    allContent.add(new FileContent(file.getFileName().toString(), sections.afterHorizontalRule()));
-                }
-
             } catch (Exception e) {
                 System.err.println("Error processing file " + file.getFileName() + ": " + e.getMessage());
             }
         }
 
-        // Generate merged output
-        StringBuilder mergedContent = new StringBuilder();
+        // Merge data from test_result into input table based on ID
+        Table mergedTable = mergeTablesById(inputTable, testResultTables);
 
-        // Add merged table (if any)
-        if (!allTableData.isEmpty()) {
-            mergedContent.append(createMergedTable(allTableData, tableStructure)).append("\n\n");
-        }
+        //Create new markdown content
+        String newContent = createMarkdownTable(mergedTable);
 
-        // Add separator
-        if (!allTableData.isEmpty() && !allContent.isEmpty()) {
-            mergedContent.append("---\n\n");
-        }
-
-        // Add content after --- from all files
-        for (FileContent content : allContent) {
-            mergedContent.append("\n");
-            mergedContent.append(content.content()).append("\n\n");
-        }
-
-        if (mergedContent.isEmpty()) {
-            System.out.println("No content found to merge.");
-            return;
-        }
-
-        Files.write(Paths.get(outputFileName), mergedContent.toString().getBytes());
+        //Write output file
+        Files.write(Paths.get(outputFileName), newContent.getBytes());
     }
 
     /**
-     * Scans a given directory for Markdown files (`.md`), excluding the specified output file.
-     * The search is limited to the top level of the given directory.
-     * <p>
-     * Files are sorted based on a numeric sequence extracted from their filenames
-     * using {@link #extractStartNumber(String)}.
-     * </p>
+     * Scans the directory for markdown files that match the "test_result" pattern or numeric pattern.
+     * Files are sorted based on the starting number extracted from the filename.
      *
-     * @param directory      The directory to search in.
-     * @param outputFileName The name of the output file to exclude from the search results.
-     * @return A sorted list of {@code Path} objects representing the found Markdown files.
-     * @throws IOException if an I/O error occurs during file system traversal.
+     * @param directory      The directory to scan.
+     * @param inputFileName  The input filename to exclude.
+     * @param outputFileName The output filename to exclude.
+     * @return A sorted list of Paths to the test result files.
+     * @throws IOException If an I/O error occurs during directory walking.
      */
-    private static List<Path> findMarkdownFiles(Path directory, String outputFileName) throws IOException {
-
-        List<Path> files = Files.walk(directory, 1)
+    private static List<Path> findTestResultFiles(Path directory, String inputFileName, String outputFileName) throws IOException {
+        List<Path> allFiles = Files.walk(directory, 1)
                 .filter(Files::isRegularFile)
                 .filter(path -> path.toString().endsWith(".md"))
+                .filter(path -> !path.getFileName().toString().equals(inputFileName))
                 .filter(path -> !path.getFileName().toString().equals(outputFileName))
                 .toList();
 
-        List<PathWithNumber> validPaths = new ArrayList<>();
+        // Filter files with test_result pattern
+        List<Path> testResultFiles = new ArrayList<>();
+        List<Path> skippedFiles = new ArrayList<>();
 
-        for (Path path : files) {
-            String fileName = path.getFileName().toString();
-            Integer startNumber = extractStartNumber(fileName);
-
-            if (startNumber != null) {
-                validPaths.add(new PathWithNumber(path, startNumber));
+        for (Path file : allFiles) {
+            String fileName = file.getFileName().toString();
+            if (fileName.matches(".*Testcase_Result_(\\d+)_(\\d+).*") || hasNumberPattern(fileName)) {
+                testResultFiles.add(file);
+                System.out.println(file.getFileName() + " passed");
+            } else {
+                skippedFiles.add(file);
             }
         }
 
-        validPaths.sort(Comparator.comparingInt(PathWithNumber::number));
+        if (!skippedFiles.isEmpty()) {
+            System.out.println("Skipping files without test_result pattern:");
+            for (Path skipped : skippedFiles) {
+                System.out.println("  - " + skipped.getFileName());
+            }
+        }
 
-        return validPaths.stream()
-                .map(PathWithNumber::path)
-                .collect(Collectors.toList());
+        //Sort by start number
+        testResultFiles.sort((p1, p2) -> {
+            int num1 = extractStartNumber(p1.getFileName().toString());
+            int num2 = extractStartNumber(p2.getFileName().toString());
+            return Integer.compare(num1, num2);
+        });
+
+        return testResultFiles;
     }
 
     /**
-     * Extracts a specific numeric identifier from a filename based on a regex pattern.
-     * <p>
-     * The method expects the filename to end with a pattern like {@code _num1_num2.md}
-     * (e.g., {@code file_10_01.md}). It extracts and returns the first number group (num1).
-     * </p>
+     * Checks if the filename matches the numeric pattern (e.g., file_100_200.md).
      *
-     * @param fileName The name of the file to parse.
-     * @return The integer value of the extracted number, or {@code null} if the pattern does not match.
+     * @param fileName The filename to check.
+     * @return true if it matches the pattern, false otherwise.
      */
-    private static Integer extractStartNumber(String fileName) {
-        try {
-            // Pattern matches files ending in: _(digits)_(digits).md
-            Pattern pattern = java.util.regex.Pattern.compile(".*_(\\d+)_(\\d+)\\.md$");
-            Matcher matcher = pattern.matcher(fileName);
+    private static boolean hasNumberPattern(String fileName) {
+        return fileName.matches(".*_\\d+_\\d+\\.md$");
+    }
 
-            if (matcher.find() && matcher.groupCount() >= 1) {
-                System.out.println(matcher.group(1));
+    /**
+     * Extracts the starting number from the filename (e.g., returns 100 from file_100_200.md).
+     *
+     * @param fileName The filename to parse.
+     * @return The extracted number, or 0 if extraction fails.
+     */
+    private static int extractStartNumber(String fileName) {
+        try {
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(".*_(\\d+)_(\\d+)\\.md$");
+            java.util.regex.Matcher matcher = pattern.matcher(fileName);
+            if (matcher.find()) {
                 return Integer.parseInt(matcher.group(1));
             }
-
-            System.err.println("Invalid format file name: " + fileName);
-            return null;
         } catch (Exception e) {
-            System.err.println("Error extracting number from file: " + fileName + " - " + e.getMessage());
-            return null;
+            // Ignore
         }
+        return 0;
     }
 
     /**
-     * Splits the content of a Markdown file into two sections based on the first horizontal rule (`---`).
+     * Parses the markdown content and extracts the first table found.
      *
-     * @param markdown The full string content of the Markdown file.
-     * @param fileName The name of the file, used for context in the returned record.
-     * @return A {@code FileSections} record containing the content before and after the horizontal rule.
-     * If no rule is found, the {@code afterHorizontalRule} component will be {@code null}.
+     * @param markdown The raw markdown string.
+     * @return A {@link Table} object representing the first table, or null if no table is found.
      */
-    private static FileSections splitFileContent(String markdown, String fileName) {
-        // Split content by the first horizontal rule (---)
-        String[] sections = markdown.split("\\n\\s*---\\s*\\n", 2);
-
-        if (sections.length == 1) {
-            // No horizontal rule found - all content is "before"
-            return new FileSections(fileName, sections[0], null);
-        } else {
-            // Has horizontal rule - split into before and after
-            return new FileSections(fileName, sections[0], sections[1]);
-        }
-    }
-
-    /**
-     * Parses a given Markdown string to find and extract all tables using the flexmark-java library.
-     * It traverses the document's abstract syntax tree (AST) to locate table blocks.
-     *
-     * @param markdown The Markdown content to parse.
-     * @param fileName The source file name, used for context in the returned data.
-     * @return A list of {@code TableData} records, one for each table found in the content.
-     */
-    private static List<TableData> parseTablesFromMarkdown(String markdown, String fileName) {
-        List<TableData> tables = new ArrayList<>();
+    private static Table parseFirstTable(String markdown) {
         Node document = parser.parse(markdown);
-
-        // Find all table blocks in the document
         List<TableBlock> tableBlocks = new ArrayList<>();
         collectTableBlocks(document, tableBlocks);
 
-        for (TableBlock tableBlock : tableBlocks) {
-            TableData tableData = extractTableData(tableBlock, fileName);
-            if (tableData != null) {
-                tables.add(tableData);
-            }
+        if (tableBlocks.isEmpty()) {
+            return null;
         }
 
-        return tables;
+        TableBlock firstTable = tableBlocks.getFirst();
+        return extractTable(firstTable);
     }
 
     /**
-     * Recursively traverses the abstract syntax tree (AST) of a parsed Markdown document
-     * to find all {@code TableBlock} nodes.
+     * Recursively traverses the AST to collect all TableBlock nodes.
      *
-     * @param node        The current AST node to start the search from.
-     * @param tableBlocks The list to which found {@code TableBlock} nodes are added.
+     * @param node        The current node being visited.
+     * @param tableBlocks The list to populate with found TableBlocks.
      */
     private static void collectTableBlocks(Node node, List<TableBlock> tableBlocks) {
         if (node instanceof TableBlock) {
@@ -296,14 +243,12 @@ public class Main {
     }
 
     /**
-     * Extracts the headers and rows from a single {@code TableBlock} AST node.
+     * Converts a Flexmark TableBlock AST node into a simple Table record.
      *
-     * @param tableBlock The {@code TableBlock} node from the AST.
-     * @param fileName   The name of the source file for context.
-     * @return A {@code TableData} record containing the table's structure and rows.
-     * Returns {@code null} if no headers are found in the table.
+     * @param tableBlock The TableBlock node.
+     * @return A {@link Table} object containing headers and rows.
      */
-    private static TableData extractTableData(TableBlock tableBlock, String fileName) {
+    private static Table extractTable(TableBlock tableBlock) {
         List<String> headers = new ArrayList<>();
         List<List<String>> rows = new ArrayList<>();
 
@@ -338,18 +283,14 @@ public class Main {
             }
         }
 
-        if (!headers.isEmpty()) {
-            return new TableData(fileName, new TableStructure(headers), rows);
-        }
-
-        return null;
+        return new Table(headers, rows);
     }
 
     /**
-     * Extracts the text content of all cells within a single {@code TableRow} node.
+     * Extracts text content from all cells in a table row.
      *
-     * @param row The {@code TableRow} node from the AST.
-     * @return A list of strings, where each string is the trimmed content of a cell in the row.
+     * @param row The TableRow node.
+     * @return A list of strings representing the cell values.
      */
     private static List<String> extractRowCells(TableRow row) {
         List<String> cells = new ArrayList<>();
@@ -365,10 +306,10 @@ public class Main {
     }
 
     /**
-     * Extracts the raw text content from a cell node by concatenating the text of all its children.
+     * Helper method to extract text content from a cell node.
      *
-     * @param cell The {@code TableCell} node (or any other node) from the AST.
-     * @return A string containing the concatenated and trimmed text of all child nodes.
+     * @param cell The TableCell node.
+     * @return The string content of the cell.
      */
     private static String extractCellContent(Node cell) {
         StringBuilder content = new StringBuilder();
@@ -383,101 +324,111 @@ public class Main {
     }
 
     /**
-     * Generates a single Markdown table string by merging the rows from multiple tables that share a common structure.
+     * Merges the input table with data from test result tables.
+     * The merge is performed based on the first column (ID) of the input table.
      *
-     * @param tables    A list of {@code TableData} objects to merge. All tables are expected to have the same structure.
-     * @param structure The common {@code TableStructure} (headers) for the merged table.
-     * @return A string representing the complete merged Markdown table.
+     * @param inputTable       The base table.
+     * @param testResultTables A list of tables containing additional data.
+     * @return A new {@link Table} with merged columns.
      */
-    private static String createMergedTable(List<TableData> tables, TableStructure structure) {
-        StringBuilder merged = new StringBuilder();
+    private static Table mergeTablesById(Table inputTable, List<Table> testResultTables) {
+        // Create a map for quick access to rows by ID from test_result tables
+        Map<String, List<String>> idToTestResultRowMap = new HashMap<>();
+        List<String> testResultHeaders = new ArrayList<>();
 
-        // Create header
-        List<String> headers = structure.headers();
-        merged.append("| ").append(String.join(" | ", headers)).append(" |\n");
+        // Get headers from test_result tables (assuming all have the same headers)
+        if (!testResultTables.isEmpty()) {
+            testResultHeaders = testResultTables.getFirst().headers();
+        }
 
-        // Create separator
-        merged.append("|");
-        merged.append(" --- |".repeat(headers.size()));
-        merged.append("\n");
-
-        // Add all rows from all tables
-        for (TableData table : tables) {
-            for (List<String> row : table.rows()) {
-                merged.append("| ").append(String.join(" | ", row)).append(" |\n");
+        //For each row in test result table map with their id
+        for (Table testResultTable : testResultTables) {
+            for (List<String> row : testResultTable.rows()) {
+                if (!row.isEmpty()) {
+                    String id = row.getFirst();
+                    idToTestResultRowMap.put(id, row);
+                }
             }
         }
 
-        return merged.toString();
-    }
-
-    /**
-     * A record to hold the content of a file, split into two parts by a horizontal rule (`---`).
-     *
-     * @param fileName             The name of the source file.
-     * @param beforeHorizontalRule The content before the first horizontal rule.
-     * @param afterHorizontalRule  The content after the first horizontal rule. Can be {@code null}.
-     */
-    private record FileSections(String fileName, String beforeHorizontalRule, String afterHorizontalRule) {
-    }
-
-    /**
-     * A record to represent a single parsed table from a Markdown file.
-     *
-     * @param sourceFile The name of the file the table was parsed from.
-     * @param structure  The {@code TableStructure} (headers) of the table.
-     * @param rows       A list of lists of strings, representing the data rows of the table.
-     */
-    private record TableData(String sourceFile, TableStructure structure, List<List<String>> rows) {
-    }
-
-    /**
-     * A record to represent the structure (headers) of a Markdown table.
-     * This is used for comparison to ensure that different tables can be merged.
-     *
-     * @param headers A list of strings representing the column headers.
-     */
-    private record TableStructure(List<String> headers) {
-        /**
-         * Constructor creates a defensive copy of the headers list to ensure immutability.
-         *
-         * @param headers The list of header strings.
-         */
-        private TableStructure(List<String> headers) {
-            this.headers = new ArrayList<>(headers);
+        // Create new headers: headers from input + headers from test_result (excluding the ID column)
+        List<String> newHeaders = new ArrayList<>(inputTable.headers());
+        if (!testResultHeaders.isEmpty()) {
+            newHeaders.addAll(testResultHeaders.subList(1, testResultHeaders.size()));
         }
 
-        /**
-         * Compares this table structure to another object.
-         * Equality is defined based on the content and order of the headers.
-         *
-         * @param obj The object to compare with.
-         * @return {@code true} if the headers are identical, {@code false} otherwise.
-         */
+        //Create new rows
+        List<List<String>> mergedRows = new ArrayList<>();
+
+        int inputHeaderSize = inputTable.headers().size();
+
+        //
+        for (List<String> inputRow : inputTable.rows()) {
+            if (inputRow.isEmpty()) continue;
+
+            String id = inputRow.getFirst();
+            List<String> newRow = new ArrayList<>(inputRow);
+
+            // Add data from test_result if available
+            List<String> testResultRow = idToTestResultRowMap.get(id);
+            if (testResultRow != null) {
+                // Add all columns from test_result except the first ID column
+                newRow.addAll(testResultRow.subList(1, testResultRow.size()));
+            } else {
+                // Add empty values for test_result columns if not found
+                for (int i = 1; i < testResultHeaders.size(); i++) {
+                    newRow.add("");
+                }
+            }
+
+            mergedRows.add(newRow);
+        }
+
+        return new Table(newHeaders, mergedRows);
+    }
+
+    /**
+     * Converts a Table object into a Markdown table string.
+     *
+     * @param table The table data to convert.
+     * @return A string formatted as a Markdown table.
+     */
+    private static String createMarkdownTable(Table table) {
+        StringBuilder markdown = new StringBuilder();
+
+        List<String> headers = table.headers();
+        List<List<String>> rows = table.rows();
+
+        // Header
+        markdown.append("| ").append(String.join(" | ", headers)).append(" |\n");
+
+        // Separator
+        markdown.append("|");
+        markdown.append(" --- |".repeat(headers.size()));
+        markdown.append("\n");
+
+        // Rows
+        for (List<String> row : rows) {
+            markdown.append("| ").append(String.join(" | ", row)).append(" |\n");
+        }
+
+        return markdown.toString();
+    }
+
+    /**
+     * A record class to hold table data structure.
+     *
+     * @param headers The list of column headers.
+     * @param rows    The list of rows, where each row is a list of cell values.
+     */
+    private record Table(List<String> headers, List<List<String>> rows) {
+
         @Override
-        public boolean equals(Object obj) {
-            if (this == obj) return true;
-            if (obj == null || getClass() != obj.getClass()) return false;
-            TableStructure that = (TableStructure) obj;
-            return Objects.equals(headers, that.headers);
+        public @NotNull String toString() {
+            return "Table{" +
+                    "headers=" + headers +
+                    ", rows=" + rows +
+                    '}';
         }
-    }
-
-    /**
-     * A record to hold the non-table content from a file (typically the part after the horizontal rule).
-     *
-     * @param fileName The name of the source file.
-     * @param content  The string content from the file.
-     */
-    private record FileContent(String fileName, String content) {
-    }
-
-    /**
-     * A helper record used for sorting file paths based on an extracted number.
-     *
-     * @param path   The file path.
-     * @param number The number extracted from the filename for sorting purposes.
-     */
-    private record PathWithNumber(Path path, int number) {
     }
 }
