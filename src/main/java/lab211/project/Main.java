@@ -49,7 +49,7 @@ public class Main {
      * The entry point of the application.
      *
      * @param args Command line arguments. The first argument is optional and specifies
-     * the output filename (defaults to "output.md" if not provided).
+     *             the output filename (defaults to "output.md" if not provided).
      */
     public static void main(String[] args) {
         String outputFileName = "output.md";
@@ -440,6 +440,7 @@ public class Main {
     private record TableStructure(List<String> headers) {
         /**
          * Constructor creates a defensive copy of the headers list to ensure immutability.
+         *
          * @param headers The list of header strings.
          */
         private TableStructure(List<String> headers) {
