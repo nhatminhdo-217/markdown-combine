@@ -420,11 +420,17 @@ public class Main {
         // Create new rows
         List<List<String>> mergedRows = new ArrayList<>();
 
+        int inputHeaderSize = inputTable.headers().size();
+
         for (List<String> inputRow : inputTable.rows()) {
             if (inputRow.isEmpty()) continue;
 
             String id = inputRow.getFirst();
             List<String> newRow = new ArrayList<>(inputRow);
+
+            while (newRow.size() < inputHeaderSize) {
+                newRow.add("");
+            }
 
             // Add data from test_result if available
             List<String> testResultRow = idToTestResultRowMap.get(id);
